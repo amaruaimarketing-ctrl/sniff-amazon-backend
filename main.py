@@ -1,5 +1,3 @@
-import sys, os
-sys.path.insert(0, os.path.dirname(__file__))
 """
 Sniff Amazon – Backend (FastAPI + SQLite)
 Endpoints documentados al final del archivo en ENDPOINTS.md
@@ -345,6 +343,94 @@ def get_stats():
         "avg_margin_pct": round(avg_m or 0, 1),
         "approved": approved
     }
+
+
+# ─────────────────────────────────────────────
+# CJ DROPSHIPPING
+# ─────────────────────────────────────────────
+
+@app.get("/api/cj/search")
+def cj_search(q: str, page: int = 1):
+    """
+    Busca productos en CJdropshipping por nombre.
+    Devuelve precio, stock y días de envío estimados.
+    Ejemplo: GET /api/cj/search?q=scalp+massage+brush
+    """
+    try:
+        from cj_client import search_products
+        results = search_products(q, page=page, page_size=10)
+        return {"ok": True, "results": results, "query": q}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Error CJ API: {str(e)}")
+
+
+@app.get("/api/cj/product/{pid}")
+def cj_product(pid: str):
+    """
+    Obtiene detalles completos de un producto CJ por su PID.
+    Incluye precio actual, stock y días de envío.
+    """
+    try:
+        from cj_client import get_product_by_pid
+        return {"ok": True, "product": get_product_by_pid(pid)}
+    except Exception as e:
+        raise HTTPException(500, f"Error CJ API: {str(e)}")
+
+
+@app.get("/api/cj/stock/{pid}")
+def cj_stock(pid: str):
+    """
+    Consulta el stock actual de un producto CJ.
+    Útil para verificar antes de publicar en Amazon.
+    """
+    try:
+        from cj_client import get_stock
+        return get_stock(pid)
+    except Exception as e:
+        raise HTTPException(500, f"Error CJ API: {str(e)}")
+
+
+@app.post("/api/cj/sync-prices")
+def cj_sync_prices():
+    """
+    Actualiza precios y stock de todos los productos que tienen cj_pid.
+    El cron job nocturno llama a esto automáticamente.
+    También puedes llamarlo manualmente con el botón de recalcular.
+    """
+    try:
+        from cj_client import update_prices_from_cj
+        db = get_db()
+        cfg = _load_config(db)
+        result = update_prices_from_cj(db, cfg)
+        db.close()
+        return {"ok": True, **result, "timestamp": datetime.utcnow().isoformat()}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Error sincronizando CJ: {str(e)}")
+
+
+@app.post("/api/products/{product_id}/link-cj")
+def link_cj_product(product_id: int, body: dict = {}):
+    """
+    Vincula un producto de la BD con su PID de CJdropshipping.
+    Después de vincular, el cron job actualizará precios automáticamente.
+    Body: {"cj_pid": "xxxxx"}
+    """
+    cj_pid = body.get("cj_pid", "").strip()
+    if not cj_pid:
+        raise HTTPException(400, "Falta cj_pid en el body")
+
+    db = get_db()
+    db.execute(
+        "UPDATE products SET cj_pid=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        (cj_pid, product_id)
+    )
+    db.commit()
+    db.close()
+    return {"ok": True, "product_id": product_id, "cj_pid": cj_pid}
 
 
 # ─────────────────────────────────────────────
